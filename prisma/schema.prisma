@@ -1,0 +1,137 @@
+// schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum DocType {
+  CC // Cédula de ciudadanía
+  CE // Cédula de extranjería
+  PA // Pasaporte
+}
+
+model Applicant {
+  id          String   @id @default(uuid())
+  requestNo   Int      @unique @default(dbgenerated("nextval('public.request_no_seq'::regclass)"))
+  requestCode String   @unique
+  firstName   String
+  lastName    String
+  phoneE164   String   @unique
+  createdAt   DateTime @default(now())
+
+  // NUEVO ↓
+  docType   DocType?
+  docNumber String?
+
+  // Proyección última evaluación
+  lastEvaluationId String?     @unique
+  lastEvaluation   Evaluation? @relation("Applicant_LastEvaluation", fields: [lastEvaluationId], references: [id], onDelete: SetNull)
+  lastScore        Int?
+  lastEvaluatedAt  DateTime?
+
+  conversations     Conversation[]
+  evaluations       Evaluation[]
+  ApplicantIdentity ApplicantIdentity[]
+
+  // Unicidad por documento (permite NULLs)
+  @@unique([docType, docNumber], map: "Applicant_doc_unique")
+  @@index([docNumber])
+}
+
+model Conversation {
+  id          String    @id @default(uuid())
+  applicantId String
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  meta        Json?
+
+  remoteJid     String   @unique
+  channel       String?
+  state         String   @default("awaiting_opt_in")
+  lastMessageId String?
+  updatedAt     DateTime @updatedAt
+
+  applicant Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@index([applicantId])
+}
+
+model MessageSeen {
+  messageId String   @id
+  seenAt    DateTime @default(now())
+}
+
+model PrecalifBuffer {
+  remoteJid String   @id
+  slots     Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+model ApplicantIdentity {
+  id          String   @id @default(uuid())
+  applicantId String
+  type        String
+  value       String
+  createdAt   DateTime @default(now())
+
+  applicant Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  @@unique([type, value])
+  @@index([applicantId])
+}
+
+enum EvalStatus {
+  processing
+  done
+  failed
+}
+
+enum Origin {
+  wsp
+  web
+  backoffice
+}
+
+model Evaluation {
+  id              String  @id @default(uuid())
+  applicantId     String
+  idempotencyKey  String  @unique
+  origin          Origin
+  vendor          String?
+  vendorRequestId String?
+  remoteJid       String?
+  sessionId       String?
+
+  score     Int?
+  decision  String?
+  status    EvalStatus @default(processing)
+  slots     Json
+  error     String?
+  latencyMs Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  applicant Applicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+
+  // back-relation 1–1 para Applicant.lastEvaluation
+  lastOfApplicant Applicant? @relation("Applicant_LastEvaluation")
+
+  // back-relation 1–1 para EvaluationRaw
+  raw EvaluationRaw?
+
+  @@index([applicantId, createdAt])
+}
+
+model EvaluationRaw {
+  evaluationId   String   @id
+  bureauResponse Json?
+  createdAt      DateTime @default(now())
+
+  evaluation Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+}
