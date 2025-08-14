@@ -6,9 +6,10 @@ export default function Home() {
     <main className="min-h-screen p-6 grid place-items-center">
       <div className="w-full max-w-xl">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-center flex-1">
-            Inicia Evaluación Inquilino
-          </h1>
+          <div className="flex-1 text-center">
+            <h1 className="text-2xl font-bold leading-tight">Fianza Profesional</h1>
+            <p className="text-sm text-muted-foreground mt-1">Inicia Evaluación Inquilino</p>
+          </div>
           <ModeToggle />
         </div>
         <Form />
