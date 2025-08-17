@@ -10,19 +10,16 @@ export const dynamic = "force-dynamic";
 export default async function Page({
   params,
 }: {
-  // 👇 en Next 14.2+/15 params viene como Promise
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params; // 👈 hay que await
+  const { id } = await params;
 
   const applicant = await prisma.applicant.findUnique({
     where: { id },
     include: { documents: { orderBy: { uploadedAt: "desc" } } },
   });
 
-  if (!applicant) {
-    notFound();
-  }
+  if (!applicant) notFound();
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
