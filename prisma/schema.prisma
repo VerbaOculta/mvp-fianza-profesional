@@ -15,32 +15,66 @@ enum DocType {
   PA // Pasaporte
 }
 
+enum Rol {
+  Inquilino
+  DeudorSolidario
+}
+
+enum DocumentType {
+  CEDULA_FRENTE
+  CEDULA_REVERSO
+  CONTRATO
+  RECIBO
+  OTRO
+}
+
+enum EvalStatus {
+  processing
+  done
+  failed
+}
+
+enum Origin {
+  wsp
+  web
+  backoffice
+}
+
 model Applicant {
-  id          String   @id @default(uuid())
-  requestNo   Int      @unique @default(dbgenerated("nextval('public.request_no_seq'::regclass)"))
-  requestCode String   @unique
-  firstName   String
-  lastName    String
-  phoneE164   String   @unique
-  createdAt   DateTime @default(now())
+  id              String   @id @default(uuid())
+  requestNo       Int      @unique 
+  requestCode     String   @unique
+  firstName       String
+  lastName        String
+  phoneE164       String   @unique
+  createdAt       DateTime @default(now())
 
-  // NUEVO ↓
-  docType   DocType?
-  docNumber String?
+  docType         DocType?
+  docNumber       String?
 
-  // Proyección última evaluación
   lastEvaluationId String?     @unique
   lastEvaluation   Evaluation? @relation("Applicant_LastEvaluation", fields: [lastEvaluationId], references: [id], onDelete: SetNull)
   lastScore        Int?
   lastEvaluatedAt  DateTime?
 
+  rol              Rol
+
   conversations     Conversation[]
   evaluations       Evaluation[]
   ApplicantIdentity ApplicantIdentity[]
+  documents         Document[]
 
-  // Unicidad por documento (permite NULLs)
   @@unique([docType, docNumber], map: "Applicant_doc_unique")
   @@index([docNumber])
+}
+
+model Document {
+  id          String       @id @default(uuid())
+  applicant   Applicant    @relation(fields: [applicantId], references: [id])
+  applicantId String
+  type        DocumentType
+  url         String
+  uploadedAt  DateTime     @default(now())
 }
 
 model Conversation {
@@ -83,18 +117,6 @@ model ApplicantIdentity {
 
   @@unique([type, value])
   @@index([applicantId])
-}
-
-enum EvalStatus {
-  processing
-  done
-  failed
-}
-
-enum Origin {
-  wsp
-  web
-  backoffice
 }
 
 model Evaluation {

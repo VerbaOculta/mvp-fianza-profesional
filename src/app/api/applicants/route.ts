@@ -1,121 +1,214 @@
-// src/app/api/applicants/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient, Prisma } from "@prisma/client"; // La importación de Prisma se mantiene por si es necesaria en otras partes del código
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { randomUUID } from "crypto";
+import { prisma } from "@/lib/prisma";
+import { DocType, Rol, DocumentType } from "@prisma/client";
 
-const prisma = new PrismaClient();
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const toRequestCode = (n: number) => `SOL-${String(n).padStart(6, "0")}`;
-const toRemoteJid = (phoneE164: string) =>
-  phoneE164.replace(/\D/g, "") + "@s.whatsapp.net";
+const s3 = new S3Client({
+  region: process.env.S3_REGION!,
+  credentials: {
+    accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+  },
+});
 
-/** Normaliza número de documento según tipo */
-function normalizeDoc(
-  docType?: "CC" | "CE" | "PA",
-  value?: string | null
-): string | null {
-  if (!docType || !value) return null;
-  const v = String(value).trim();
-  if (docType === "PA") return v.replace(/\s+/g, "").toUpperCase(); // pasaporte: alfanumérico
-  return v.replace(/\D/g, ""); // CC/CE: solo dígitos
+function getExt(filename?: string | null): string {
+  if (!filename) return "bin";
+  const parts = filename.split(".");
+  const ext = parts.length > 1 ? parts.pop() : "";
+  return (ext || "bin").toLowerCase();
 }
 
-type PostBody = {
-  firstName: string;
-  lastName: string;
-  phoneE164: string;
-  docType?: "CC" | "CE" | "PA";
-  docNumber?: string;
-};
+const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const MAX_SIZE_BYTES = 7 * 1024 * 1024;
+
+async function generateUniqueRequestNo(): Promise<number> {
+  for (let i = 0; i < 5; i++) {
+    const n = Math.floor(Math.random() * 1_000_000);
+    const exists = await prisma.applicant.findUnique({ where: { requestNo: n } });
+    if (!exists) return n;
+  }
+  return Number(String(Date.now()).slice(-6));
+}
+
+async function generateUniqueRequestCode(): Promise<string> {
+  for (let i = 0; i < 5; i++) {
+    const code = `REQ-${Math.floor(Math.random() * 1_000_000)}`;
+    const exists = await prisma.applicant.findUnique({ where: { requestCode: code } });
+    if (!exists) return code;
+  }
+  return `REQ-${String(Date.now()).slice(-6)}`;
+}
+
+async function notifyN8N(payload: Record<string, unknown>) {
+  const url = process.env.N8N_WEBHOOK_URL; // ¡solo server-side!
+  if (!url) {
+    console.warn("[n8n] N8N_WEBHOOK_URL no definido; se omite.");
+    return { ok: false, reason: "no_url" };
+  }
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      // Si tu n8n está en la misma red y tarda, puedes bajar el timeout con AbortController
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { ok: true };
+  } catch (err) {
+    console.warn("[n8n] notify failed:", err);
+    return { ok: false, reason: "fetch_failed" };
+  }
+}
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = (await req.json().catch(() => null)) as PostBody | null;
-    if (!body) return NextResponse.json({ error: "Bad JSON" }, { status: 400 });
+  console.log("[/api/applicants] START", {
+    region: process.env.S3_REGION,
+    bucket: process.env.S3_BUCKET,
+    hasKey: !!process.env.S3_ACCESS_KEY_ID,
+    hasSecret: !!process.env.S3_SECRET_ACCESS_KEY,
+  });
 
-    const { firstName, lastName, phoneE164, docType, docNumber } = body;
-    if (!firstName || !lastName || !phoneE164) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+  try {
+    const form = await req.formData();
+
+    const rol = String(form.get("rol") ?? "") as Rol;
+    const firstName = String(form.get("nombres") ?? "");
+    const lastName = String(form.get("apellidos") ?? "");
+    const phoneE164 = String(form.get("telefono") ?? "");
+    const docTypeStr = String(form.get("docType") ?? "");
+    const docNumber = String(form.get("docNumber") ?? "");
+    const file = form.get("documentFile") as File | null;
+
+    const documentTypeStr = String(form.get("documentKind") ?? "CEDULA_FRENTE");
+    const documentType = (Object.values(DocumentType) as string[]).includes(documentTypeStr)
+      ? (documentTypeStr as DocumentType)
+      : DocumentType.CEDULA_FRENTE;
+
+    // Validaciones básicas
+    if (!firstName || !lastName) return NextResponse.json({ error: "Nombres y apellidos son obligatorios" }, { status: 400 });
+    if (!rol || !Object.values(Rol).includes(rol)) return NextResponse.json({ error: "Rol inválido" }, { status: 400 });
+
+    let docType: DocType | null = null;
+    if (docTypeStr) {
+      if (!Object.values(DocType).includes(docTypeStr as DocType))
+        return NextResponse.json({ error: "DocType inválido" }, { status: 400 });
+      docType = docTypeStr as DocType;
+      if (!docNumber)
+        return NextResponse.json({ error: "docNumber es obligatorio cuando envías docType" }, { status: 400 });
     }
 
-    const normalizedDoc = normalizeDoc(docType, docNumber);
+    if (!phoneE164) return NextResponse.json({ error: "phoneE164 es obligatorio" }, { status: 400 });
+    if (!file) return NextResponse.json({ error: "Falta documentFile" }, { status: 400 });
+    if (!ALLOWED_TYPES.has(file.type)) return NextResponse.json({ error: `Tipo de archivo no permitido: ${file.type}` }, { status: 415 });
 
-    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      // 1) Applicant por teléfono (evita unique violation en phoneE164)
-      const applicant = await tx.applicant.upsert({
-        where: { phoneE164 },
-        update: {
-          firstName,
-          lastName,
-          ...(docType && normalizedDoc
-            ? { docType, docNumber: normalizedDoc }
-            : {}),
+    // Narrow para TS
+    type RuntimeFile = File & { size: number; name: string; type: string };
+    const f = file as RuntimeFile;
+    const size: number | undefined = typeof f.size === "number" ? f.size : undefined;
+    if (typeof size === "number" && size > MAX_SIZE_BYTES)
+      return NextResponse.json({ error: `Archivo demasiado grande: ${size} bytes` }, { status: 413 });
+
+    // Reuse/Create Applicant
+    let applicant = await prisma.applicant.findUnique({ where: { phoneE164 } });
+    if (!applicant && docType && docNumber) {
+      applicant = await prisma.applicant.findFirst({ where: { docType, docNumber } });
+    }
+    if (applicant) {
+      await prisma.applicant.update({
+        where: { id: applicant.id },
+        data: {
+          firstName: applicant.firstName || firstName,
+          lastName: applicant.lastName || lastName,
+          rol: applicant.rol || rol,
+          docType: applicant.docType ?? docType,
+          docNumber: applicant.docNumber ?? (docNumber || null),
         },
-        create: {
-          id: randomUUID(),
+      });
+    } else {
+      const [requestNo, requestCode] = await Promise.all([
+        generateUniqueRequestNo(),
+        generateUniqueRequestCode(),
+      ]);
+      applicant = await prisma.applicant.create({
+        data: {
+          requestNo,
+          requestCode,
           firstName,
           lastName,
           phoneE164,
-          requestCode: "PENDING",
-          ...(docType && normalizedDoc
-            ? { docType, docNumber: normalizedDoc }
-            : {}),
+          rol,
+          docType: docType ?? null,
+          docNumber: docNumber || null,
         },
-        select: { id: true, requestNo: true, requestCode: true },
       });
+    }
 
-      // 2) Generar/asegurar requestCode legible
-      let requestCode = applicant.requestCode;
-      if (requestCode === "PENDING") {
-        requestCode = toRequestCode(applicant.requestNo);
-        await tx.applicant.update({
-          where: { id: applicant.id },
-          data: { requestCode },
-        });
-      }
+    // Subir a S3 y crear Document
+    const arrayBuffer = await f.arrayBuffer();
+    const Body = Buffer.from(arrayBuffer);
+    const ext = getExt(f.name);
+    const key = `applicants/${Date.now()}-${randomUUID()}.${ext}`;
+    const contentType = f.type || "application/octet-stream";
 
-      // 3) Conversation por remoteJid (upsert por UNIQUE)
-      const remoteJid = toRemoteJid(phoneE164);
-      const conv = await tx.conversation.upsert({
-        where: { remoteJid },
-        update: {
-          applicantId: applicant.id,
-          channel: "web",
-          state: "awaiting_opt_in",
-          meta: { source: "web-mvp" },
-        },
-        create: {
-          id: randomUUID(),
-          applicantId: applicant.id,
-          remoteJid,
-          channel: "web",
-          state: "awaiting_opt_in",
-          meta: { source: "web-mvp" },
-        },
-        select: { id: true },
-      });
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: process.env.S3_BUCKET!,
+        Key: key,
+        Body,
+        ContentType: contentType,
+      })
+    );
 
-      return {
-        applicantId: applicant.id,
-        requestNo: applicant.requestNo,
-        requestCode,
-        sessionId: conv.id,
-      };
+    const fileUrl = `https://${process.env.S3_BUCKET!}.s3.${process.env.S3_REGION!}.amazonaws.com/${key}`;
+    const document = await prisma.document.create({
+      data: { applicantId: applicant.id, type: documentType, url: fileUrl },
     });
 
-    const res = NextResponse.json(result);
-    res.cookies.set({
-      name: "agent_session_id",
-      value: result.sessionId,
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 días
+    // Asegurar requestNo/requestCode
+    let ensured = applicant;
+    if (!applicant.requestNo || !applicant.requestCode) {
+      const [requestNo, requestCode] = await Promise.all([
+        generateUniqueRequestNo(),
+        generateUniqueRequestCode(),
+      ]);
+      ensured = await prisma.applicant.update({
+        where: { id: applicant.id },
+        data: { requestNo, requestCode },
+      });
+    }
+
+    // Notificar a n8n (no bloqueante de la respuesta)
+    const sessionId = randomUUID();
+    void notifyN8N({
+      sessionId,
+      applicantId: applicant.id,
+      nombres: firstName,
+      apellidos: lastName,
+      telefono: phoneE164,
+      estado: "registrado",
+      docType: docType ?? null,
+      docNumber,
+      rol,
+      channel: "web",
     });
-    return res;
+
+    return NextResponse.json({
+      sessionId,
+      requestCode: ensured.requestCode,
+      requestNo: ensured.requestNo,
+      applicantId: applicant.id,
+      documentId: document.id,
+      document: { url: fileUrl, key, type: documentType },
+      reused: true,
+      n8nNotified: true, // "best-effort"
+    });
   } catch (e: unknown) {
-    console.error("[/api/applicants] Error:", e);
-    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+    const msg = e instanceof Error ? e.message : "Error desconocido";
+    console.error("[/api/applicants] ERROR", e);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

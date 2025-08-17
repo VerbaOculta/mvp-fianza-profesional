@@ -1,13 +1,11 @@
--- === SEQUENCE PARA Applicant.requestNo ===
-CREATE SEQUENCE IF NOT EXISTS public.request_no_seq
-  START WITH 1
-  INCREMENT BY 1
-  NO MINVALUE
-  NO MAXVALUE
-  CACHE 1;
-
 -- CreateEnum
 CREATE TYPE "public"."DocType" AS ENUM ('CC', 'CE', 'PA');
+
+-- CreateEnum
+CREATE TYPE "public"."Rol" AS ENUM ('Inquilino', 'DeudorSolidario');
+
+-- CreateEnum
+CREATE TYPE "public"."DocumentType" AS ENUM ('CEDULA_FRENTE', 'CEDULA_REVERSO', 'CONTRATO', 'RECIBO', 'OTRO');
 
 -- CreateEnum
 CREATE TYPE "public"."EvalStatus" AS ENUM ('processing', 'done', 'failed');
@@ -18,7 +16,7 @@ CREATE TYPE "public"."Origin" AS ENUM ('wsp', 'web', 'backoffice');
 -- CreateTable
 CREATE TABLE "public"."Applicant" (
     "id" TEXT NOT NULL,
-    "requestNo" INTEGER NOT NULL DEFAULT nextval('public.request_no_seq'::regclass),
+    "requestNo" INTEGER NOT NULL,
     "requestCode" TEXT NOT NULL,
     "firstName" TEXT NOT NULL,
     "lastName" TEXT NOT NULL,
@@ -29,12 +27,21 @@ CREATE TABLE "public"."Applicant" (
     "lastEvaluationId" TEXT,
     "lastScore" INTEGER,
     "lastEvaluatedAt" TIMESTAMP(3),
+    "rol" "public"."Rol" NOT NULL,
 
     CONSTRAINT "Applicant_pkey" PRIMARY KEY ("id")
 );
 
-ALTER SEQUENCE "public".request_no_seq
-  OWNED BY "public"."Applicant"."requestNo";
+-- CreateTable
+CREATE TABLE "public"."Document" (
+    "id" TEXT NOT NULL,
+    "applicantId" TEXT NOT NULL,
+    "type" "public"."DocumentType" NOT NULL,
+    "url" TEXT NOT NULL,
+    "uploadedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Document_pkey" PRIMARY KEY ("id")
+);
 
 -- CreateTable
 CREATE TABLE "public"."Conversation" (
@@ -149,6 +156,9 @@ CREATE INDEX "Evaluation_applicantId_createdAt_idx" ON "public"."Evaluation"("ap
 
 -- AddForeignKey
 ALTER TABLE "public"."Applicant" ADD CONSTRAINT "Applicant_lastEvaluationId_fkey" FOREIGN KEY ("lastEvaluationId") REFERENCES "public"."Evaluation"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."Document" ADD CONSTRAINT "Document_applicantId_fkey" FOREIGN KEY ("applicantId") REFERENCES "public"."Applicant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "public"."Conversation" ADD CONSTRAINT "Conversation_applicantId_fkey" FOREIGN KEY ("applicantId") REFERENCES "public"."Applicant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
