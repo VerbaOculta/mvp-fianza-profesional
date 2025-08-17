@@ -1,16 +1,19 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { uploadToS3 } from "@/lib/s3";
 import { v4 as uuidv4 } from "uuid";
 import type { DocumentType } from "@prisma/client";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  ctx: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id: applicantId } = await ctx.params;
+
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const type = formData.get("type") as string;
@@ -33,11 +36,9 @@ export async function POST(
       );
     }
 
-    const applicantId = params.id;
     const applicant = await prisma.applicant.findUnique({
       where: { id: applicantId },
     });
-
     if (!applicant) {
       return NextResponse.json(
         { error: "Applicant no encontrado." },
@@ -45,29 +46,22 @@ export async function POST(
       );
     }
 
-    // Subir archivo a S3
     const buffer = Buffer.from(await file.arrayBuffer());
     const fileExtension = file.name.split(".").pop();
     const fileName = `documents/${applicantId}/${uuidv4()}.${fileExtension}`;
     const s3Url = await uploadToS3(buffer, fileName, file.type);
 
-    // Guardar referencia en la base de datos
     const document = await prisma.document.create({
       data: {
         type: type as DocumentType,
-        url: s3Url, // campo correcto en tu schema
+        url: s3Url,
         applicantId,
       },
     });
 
     return NextResponse.json({ success: true, document });
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      console.error("Error en upload-document:", error.message);
-    } else {
-      console.error("Error desconocido en upload-document:", error);
-    }
-
+  } catch (error) {
+    console.error("Error en upload-document:", error);
     return NextResponse.json(
       { error: "Error interno del servidor." },
       { status: 500 }
