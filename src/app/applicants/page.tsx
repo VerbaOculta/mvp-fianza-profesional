@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ApplicantsSearch } from "@/components/ApplicantsSearch";
 import { Prisma, DocType } from "@prisma/client";
+import { cn } from "@/lib/utils";
+import { ApplicantsAreaChart } from "@/components/charts/ApplicantsArea";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,15 +20,14 @@ function fmtDate(d: Date | string) {
 export default async function ApplicantsIndex({
   searchParams,
 }: {
-  // 👇 En Next 14.2+/15, searchParams viene como Promise
   searchParams: Promise<{ q?: string; page?: string }>;
 }) {
-  const sp = await searchParams; // 👈 hay que await
+  const sp = await searchParams;
   const qRaw = (sp.q || "").trim();
   const page = Math.max(1, Number(sp.page || "1"));
   const skip = (page - 1) * PAGE_SIZE;
 
-  // Tipamos explícitamente los filtros y el where
+  // where de búsqueda
   let where: Prisma.ApplicantWhereInput = {};
   if (qRaw.length > 0) {
     const q = qRaw;
@@ -39,15 +40,14 @@ export default async function ApplicantsIndex({
       { docNumber: { contains: q, mode: "insensitive" } },
       { requestCode: { contains: q, mode: "insensitive" } },
     ];
-
     if (typeof byNumber === "number" && !Number.isNaN(byNumber)) {
       filters.push({ requestNo: byNumber });
     }
-
     where = { OR: filters };
   }
 
-  const [rows, total] = await Promise.all([
+  // datos
+  const [rows, total, autoCount, rawChart] = await Promise.all([
     prisma.applicant.findMany({
       where,
       orderBy: { createdAt: "desc" },
@@ -67,15 +67,70 @@ export default async function ApplicantsIndex({
       },
     }),
     prisma.applicant.count({ where }),
+    prisma.applicant.count({
+      where: {
+        AND: [
+          where,
+          { docType: { not: null } },
+          { docNumber: { not: null } },
+        ],
+      },
+    }),
+    prisma.$queryRaw<{ day: Date; count: number }[]>`
+      SELECT (date_trunc('day', "createdAt"))::date AS day,
+             COUNT(*)::int AS count
+      FROM "Applicant"
+      WHERE "createdAt" >= NOW() - INTERVAL '90 days'
+      GROUP BY day
+      ORDER BY day ASC;
+    `,
   ]);
 
+  const manualCount = Math.max(0, total - autoCount);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const chartData = rawChart.map((r) => ({
+    day: r.day.toISOString().slice(0, 10),
+    count: Number(r.count),
+  }));
 
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-8 space-y-6">
+    <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 py-4 md:py-6 space-y-6">
+      {/* KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <KpiCard
+          title="Total Casos Recibidos"
+          value={Intl.NumberFormat().format(total)}
+          trendLabel="Últimos 30 días"
+        />
+        <KpiCard
+          title="Preaprobados Automáticos"
+          value={Intl.NumberFormat().format(autoCount)}
+          subtitle="Regla: tiene tipo y número de documento"
+        />
+        <KpiCard
+          title="Preaprobados Manuales"
+          value={Intl.NumberFormat().format(manualCount)}
+          subtitle="Total - Automáticos"
+        />
+      </div>
+
+      {/* Gráfico */}
+      <Card>
+        <CardHeader className="pb-0">
+          <CardTitle className="text-lg sm:text-base">Casos por día</CardTitle>
+          <span className="text-xs sm:text-sm text-muted-foreground">
+            Totales de los últimos 90 días
+          </span>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <ApplicantsAreaChart data={chartData} />
+        </CardContent>
+      </Card>
+
+      {/* Tabla */}
       <Card>
         <CardHeader className="flex flex-col gap-2">
-          <CardTitle>Solicitantes</CardTitle>
+          <CardTitle className="text-xl sm:text-2xl">Solicitantes</CardTitle>
           <ApplicantsSearch initialQuery={qRaw} />
         </CardHeader>
 
@@ -85,42 +140,57 @@ export default async function ApplicantsIndex({
               {qRaw ? "Sin resultados para la búsqueda." : "Aún no hay solicitantes."}
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="text-xs text-muted-foreground border-b">
-                <tr>
-                  <th className="text-left py-2 pr-3">#</th>
-                  <th className="text-left py-2 pr-3">Código</th>
-                  <th className="text-left py-2 pr-3">Nombre</th>
-                  <th className="text-left py-2 pr-3">Teléfono</th>
-                  <th className="text-left py-2 pr-3">Documento</th>
-                  <th className="text-left py-2 pr-3">Docs</th>
-                  <th className="text-left py-2 pr-3">Creado</th>
-                  <th className="text-left py-2">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((a) => (
-                  <tr key={a.id} className="border-b last:border-0">
-                    <td className="py-2 pr-3 font-mono">{a.requestNo ?? "—"}</td>
-                    <td className="py-2 pr-3 font-mono">{a.requestCode ?? "—"}</td>
-                    <td className="py-2 pr-3">
-                      {a.firstName} {a.lastName}
-                    </td>
-                    <td className="py-2 pr-3">{a.phoneE164}</td>
-                    <td className="py-2 pr-3">
-                      {a.docType ? `${a.docType as DocType} · ${a.docNumber ?? "—"}` : "—"}
-                    </td>
-                    <td className="py-2 pr-3">{a._count.documents}</td>
-                    <td className="py-2 pr-3">{fmtDate(a.createdAt)}</td>
-                    <td className="py-2">
-                      <Link href={`/applicants/${a.id}`} className="underline underline-offset-2" prefetch={false}>
-                        Ver ficha
-                      </Link>
-                    </td>
+            <div className="min-w-[720px]">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground border-b">
+                  <tr>
+                    <th className="text-left py-2 pr-3">#</th>
+                    <th className="text-left py-2 pr-3">Código</th>
+                    <th className="text-left py-2 pr-3">Nombre</th>
+                    <th className="text-left py-2 pr-3">Teléfono</th>
+                    <th className="text-left py-2 pr-3">Documento</th>
+                    <th className="text-left py-2 pr-3">Docs</th>
+                    <th className="text-left py-2 pr-3">Creado</th>
+                    <th className="text-left py-2 pr-3">Estado</th>
+                    <th className="text-left py-2">Acciones</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map((a) => {
+                    const isDone = Boolean(a.docType && a.docNumber);
+                    return (
+                      <tr key={a.id} className="border-b last:border-0">
+                        <td className="py-2 pr-3 font-mono">{a.requestNo ?? "—"}</td>
+                        <td className="py-2 pr-3 font-mono break-words">{a.requestCode ?? "—"}</td>
+                        <td className="py-2 pr-3">
+                          <span className="block truncate max-w-[220px] sm:max-w-none">
+                            {a.firstName} {a.lastName}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3">{a.phoneE164}</td>
+                        <td className="py-2 pr-3">
+                          {a.docType ? `${a.docType as DocType} · ${a.docNumber ?? "—"}` : "—"}
+                        </td>
+                        <td className="py-2 pr-3">{a._count.documents}</td>
+                        <td className="py-2 pr-3">{fmtDate(a.createdAt)}</td>
+                        <td className="py-2 pr-3">
+                          <StatusBadge status={isDone ? "done" : "in_process"} />
+                        </td>
+                        <td className="py-2">
+                          <Link
+                            href={`/applicants/${a.id}`}
+                            className="underline underline-offset-2"
+                            prefetch={false}
+                          >
+                            Ver ficha
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {totalPages > 1 && (
@@ -141,6 +211,60 @@ export default async function ApplicantsIndex({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/** --- UI helpers --- */
+
+function KpiCard({
+  title,
+  value,
+  subtitle,
+  trendLabel,
+}: {
+  title: string;
+  value: string | number;
+  subtitle?: string;
+  trendLabel?: string;
+}) {
+  return (
+    <Card className="h-full">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base sm:text-lg">{title}</CardTitle>
+        {trendLabel && (
+          <span className="text-xs text-muted-foreground">{trendLabel}</span>
+        )}
+      </CardHeader>
+      <CardContent>
+        <div className="text-3xl sm:text-4xl font-semibold">{value}</div>
+        {subtitle && (
+          <div className="text-xs text-muted-foreground mt-1">{subtitle}</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusBadge({ status }: { status: "done" | "in_process" }) {
+  const isDone = status === "done";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-xs font-medium",
+        isDone
+          ? "border-green-500/20 text-green-500 bg-green-500/10"
+          : "border-muted-foreground/20 text-muted-foreground bg-muted/40"
+      )}
+      title={isDone ? "Done" : "In process"}
+    >
+      <span
+        className={cn(
+          "inline-block h-1.5 w-1.5 rounded-full",
+          isDone ? "bg-green-500" : "bg-muted-foreground/50"
+        )}
+      />
+      {isDone ? "Done" : "In process"}
+    </span>
   );
 }
 
