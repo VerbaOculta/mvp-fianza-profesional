@@ -110,7 +110,7 @@ export default function PagoClient() {
           <CardHeader>
             <CardTitle>Confirmar pago</CardTitle>
             <CardDescription>
-              Página de demo para disparar el webhook de pago hacia n8n.
+              Página de demo simular integración con pasarela de pago.
             </CardDescription>
           </CardHeader>
 
