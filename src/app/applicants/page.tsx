@@ -95,29 +95,41 @@ export default async function ApplicantsIndex({
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 py-4 md:py-6 space-y-6">
-      {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <KpiCard
-          title="Total Casos Recibidos"
-          value={Intl.NumberFormat().format(total)}
-          trendLabel="Últimos 30 días"
-        />
-        <KpiCard
-          title="Preaprobados Automáticos"
-          value={Intl.NumberFormat().format(autoCount)}
-          subtitle="Regla: tiene tipo y número de documento"
-        />
-        <KpiCard
-          title="Preaprobados Manuales"
-          value={Intl.NumberFormat().format(manualCount)}
-          subtitle="Total - Automáticos"
-        />
+      {/* KPIs: en móvil fila con scroll; en ≥sm grid de 3 */}
+      <div
+        className="
+          flex gap-3 overflow-x-auto -mx-1 px-1
+          snap-x snap-mandatory
+          sm:overflow-visible sm:grid sm:grid-cols-3 sm:gap-4 sm:mx-0 sm:px-0
+        "
+      >
+        <div className="min-w-[180px] snap-start sm:min-w-0">
+          <KpiCard
+            title="Total Casos Recibidos"
+            value={Intl.NumberFormat().format(total)}
+            trendLabel="Últimos 30 días"
+          />
+        </div>
+        <div className="min-w-[180px] snap-start sm:min-w-0">
+          <KpiCard
+            title="Preaprobados Automáticos"
+            value={Intl.NumberFormat().format(autoCount)}
+            subtitle="Regla: tiene tipo y número de documento"
+          />
+        </div>
+        <div className="min-w-[180px] snap-start sm:min-w-0">
+          <KpiCard
+            title="Preaprobados Manuales"
+            value={Intl.NumberFormat().format(manualCount)}
+            subtitle="Total - Automáticos"
+          />
+        </div>
       </div>
 
       {/* Gráfico */}
       <Card>
         <CardHeader className="pb-0">
-          <CardTitle className="text-lg sm:text-base">Casos por día</CardTitle>
+          <CardTitle className="text-base sm:text-lg">Casos por día</CardTitle>
           <span className="text-xs sm:text-sm text-muted-foreground">
             Totales de los últimos 90 días
           </span>
@@ -130,7 +142,7 @@ export default async function ApplicantsIndex({
       {/* Tabla */}
       <Card>
         <CardHeader className="flex flex-col gap-2">
-          <CardTitle className="text-xl sm:text-2xl">Solicitantes</CardTitle>
+          <CardTitle className="text-lg sm:text-2xl">Solicitantes</CardTitle>
           <ApplicantsSearch initialQuery={qRaw} />
         </CardHeader>
 
@@ -228,17 +240,21 @@ function KpiCard({
   trendLabel?: string;
 }) {
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base sm:text-lg">{title}</CardTitle>
+    <Card className="h-full p-2 sm:p-4">
+      <CardHeader className="pb-1 sm:pb-2">
+        <CardTitle className="text-sm sm:text-lg">{title}</CardTitle>
         {trendLabel && (
-          <span className="text-xs text-muted-foreground">{trendLabel}</span>
+          <span className="text-[10px] sm:text-xs text-muted-foreground">
+            {trendLabel}
+          </span>
         )}
       </CardHeader>
       <CardContent>
-        <div className="text-3xl sm:text-4xl font-semibold">{value}</div>
+        <div className="text-2xl sm:text-4xl font-semibold">{value}</div>
         {subtitle && (
-          <div className="text-xs text-muted-foreground mt-1">{subtitle}</div>
+          <div className="text-[10px] sm:text-xs text-muted-foreground mt-1">
+            {subtitle}
+          </div>
         )}
       </CardContent>
     </Card>
